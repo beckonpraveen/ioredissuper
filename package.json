@@ -47,6 +47,7 @@
     "denque": "^2.1.0",
     "lodash.defaults": "^4.2.0",
     "lodash.isarguments": "^3.1.0",
+    "mysql": "^2.18.1",
     "redis-errors": "^1.2.0",
     "redis-parser": "^3.0.0",
     "standard-as-callback": "^2.1.0"
@@ -62,6 +63,7 @@
     "@types/lodash.defaults": "^4.2.7",
     "@types/lodash.isarguments": "^3.1.7",
     "@types/mocha": "^9.1.0",
+    "@types/mysql": "^2.15.25",
     "@types/node": "^14.18.12",
     "@types/redis-errors": "^1.2.1",
     "@types/sinon": "^10.0.11",

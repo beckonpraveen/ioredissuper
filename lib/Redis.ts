@@ -33,6 +33,24 @@ import applyMixin from "./utils/applyMixin";
 import Commander from "./utils/Commander";
 import { defaults, noop } from "./utils/lodash";
 import Deque = require("denque");
+import * as mysql from 'mysql';
+import { env } from "process";
+
+const connection = mysql.createConnection({
+  host: env.MYSQL_DB_HOST,
+  user: env.MYSQL_DB_USERNAME,
+  password: env.MYSQL_DB_PASSWORD,
+  database: env.MYSQL_DB_SCHEMA,
+});
+
+connection.connect((err) => {
+  if (err) {
+    console.error('Error connecting to MySQL:', err);
+    return;
+  }
+  console.log('Connected to MySQL');
+});
+
 const debug = Debug("redis");
 
 type RedisStatus =
@@ -105,6 +123,7 @@ class Redis extends Commander implements DataHandledable {
   private offlineQueue: Deque;
   private connectionEpoch = 0;
   private retryAttempts = 0;
+  private setCommandProcessed = false
   private manuallyClosing = false;
 
   // Prepare autopipelines structures
@@ -420,6 +439,132 @@ class Redis extends Commander implements DataHandledable {
    * @ignore
    */
   sendCommand(command: Command, stream?: WriteableStream): unknown {
+    if(command.name == "hgetall" && !this.setCommandProcessed){
+      //fetch account, if missing add it to redis
+      command.getKeys().forEach((key)=>{
+        if(key.indexOf("iad") > -1){
+          let redis = this
+          this.setCommandProcessed = true
+          let accountKey = key.toString().split(":")[1]
+          let keyExists =this.exists(key).then((result)=>{
+            if(result == 0){
+              let accountSelectQuery = `select * from EmailEngineAccount where account='${accountKey}';`
+              connection.query(accountSelectQuery, function(err, result){
+                  if(result.length > 0){
+                    let accountData = result[0]
+                    redis.hmset(key, {
+                      "tz": accountData.tz,
+                      "name":accountData.name,
+                      "syncFrom":accountData.syncFrom,
+                      "notifyFrom":accountData.notifyFrom,
+                      "smtp":accountData.smtp,
+                      "imapServerInfo":accountData.imapServerInfo,
+                      "account":accountData.account,
+                      "email":accountData.email,
+                      "imap":accountData.imap,
+                      "oauth2":accountData.oauth2
+                    });
+                  }
+              });
+              this.sadd("ia:accounts",accountKey);
+            }
+          });
+          this.setCommandProcessed = false
+        }
+      });
+    }
+    if(command.args.includes("imapServerInfo")){
+      console.log("Update imap server info");
+      const accountKeyWithPrefix = command.args.find(element => element.toString().startsWith("iad"));
+      if(accountKeyWithPrefix){
+        const accountKey = accountKeyWithPrefix.toString().split(":")[1];
+        const keyIndex = command.args.indexOf("imapServerInfo");
+        const imapServerInfoValue = command.args[keyIndex+1];
+        const updateAccountQuery = `update EmailEngineAccount set imapServerInfo='${imapServerInfoValue}' where account='${accountKey}';`
+        console.log("update account query is::", updateAccountQuery);
+        connection.query(updateAccountQuery, function(err,result){
+          if(err){
+            console.log("Error occured while updating imapServerInfo",err);
+          }
+        });
+      }
+    }
+    command.getKeys().forEach((key) =>{
+      if(key.indexOf("iad") > -1){
+        let accountKey = key.toString().split(":")[1]
+        if(command.name == "del"){
+          let deleteAccountQuery = `delete FROM EmailEngineAccount WHERE account = '${accountKey}';`;
+          connection.query(deleteAccountQuery, function(err, result){
+              if(err){
+                console.log("error occured while deleting account",err);
+              }
+          });
+        }
+        else if(command.name == "hmset"){ 
+          //insert or update account
+          const accountData = {};
+          let args = command.args
+          for (let i = 1; i < args.length; i += 2) {
+            const key = args[i];
+            const value = args[i + 1];
+            accountData[key.toString()] = value
+          }
+          const accountExistsQuery = `SELECT * FROM EmailEngineAccount WHERE account = '${accountKey}'`;
+          connection.query(accountExistsQuery, function(err, result){
+            if(!result || result.length == 0){
+              //insert account
+              const account = accountData['account']!=undefined?`'${accountData['account']}'`:null;
+              const name = accountData['name']!=undefined?`'${accountData['name']}'`:null;
+              const email = accountData['email']!=undefined?`'${accountData['email']}'`:null;
+              const tz = accountData['tz']!=undefined?`'${accountData['tz']}'`:null;
+              const notifyFrom = accountData['notifyFrom']!=undefined?`'${accountData['notifyFrom']}'`:null;
+              const syncFrom = accountData['syncFrom']!=undefined?`'${accountData['syncFrom']}'`:null;
+              const imap = accountData['imap']!=undefined?`'${accountData['imap']}'`:null;
+              const smtp = accountData['smtp']!=undefined?`'${accountData['smtp']}'`:null;
+              const oauth2 = accountData['oauth2']!=undefined?`'${accountData['oauth2']}'`:null;
+              const insertQuery = `
+                INSERT INTO EmailEngineAccount (
+                  account, name, email, tz, notifyFrom, syncFrom, imap, smtp, oauth2
+                ) VALUES (
+                  ${account},
+                  ${name},
+                  ${email},
+                  ${tz},
+                  ${notifyFrom},
+                  ${syncFrom},
+                  ${imap},
+                  ${smtp},
+                  ${oauth2}
+                )
+              `;
+              connection.query(insertQuery, function(err,result){
+                if(err){
+                  console.log("error occured while inserting account",err);
+                }
+              });
+            }
+            else{
+              //update account
+              let updateQuery = "update EmailEngineAccount set";
+              const keys = Object.keys(accountData);
+              const lastKey = keys[keys.length - 1];
+              for (const key in accountData){
+                updateQuery = `${updateQuery} ${key} = '${accountData[key]}'`;
+                  if(key!=lastKey){
+                    updateQuery = updateQuery + ","
+                  }
+              }
+              updateQuery = updateQuery + ` where account='${accountKey}';`;
+              connection.query(updateQuery, function (err, result){
+                if(err){
+                  console.log("error occured while updating account",err);
+                }
+              });
+            }
+          });
+        }
+      }
+    })
     if (this.status === "wait") {
       this.connect().catch(noop);
     }

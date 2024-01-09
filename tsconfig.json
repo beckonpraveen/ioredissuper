@@ -10,7 +10,8 @@
     ],
     "moduleResolution": "node",
     "module": "commonjs",
-    "outDir": "./built"
+    "outDir": "./built",
+    "skipLibCheck": true
   },
   "include": ["./lib/**/*"]
 }
